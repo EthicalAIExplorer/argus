@@ -1,87 +1,119 @@
 # Argus
 
-Argus is a minimal, file-based intelligence distillation pipeline for newsletter ingestion and daily synthesis. It ingests emails from a dedicated Gmail account, normalises them into machine-readable JSON, and produces a daily Markdown digest.
+Argus is a file-based intelligence distillation pipeline for newsletter ingestion and daily synthesis.
 
-## Structure
+It supports:
+- Daily IMAP ingest from a dedicated mailbox.
+- Raw-to-clean normalization.
+- Daily Markdown digest generation.
+- SMTP digest email delivery to configurable recipients.
+- Local MCP server for ChatGPT UI connector access via private tunnel.
 
-```
+## Repository Layout
+
+```text
 argus/
   src/argus/
-    __init__.py
     cli.py
-    ingest.py
-    normalise.py
+    config.py
     digest.py
+    ingest.py
+    logging_config.py
+    mailer.py
+    mcp_server.py
+    normalise.py
+    paths.py
+    pipeline.py
+    status.py
+  tests/
   state/
-    last_run.json
   raw/
   clean/
   digests/
+  .env.example
   pyproject.toml
-  README.md
 ```
+
+## Requirements
+
+- Python 3.12+
+- Gmail account with IMAP enabled and App Passwords for IMAP/SMTP
 
 ## Setup
 
-- Python 3.12+
-- Create a virtual environment and install dependencies:
-
-```
-python -m venv .venv
+```bash
+python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e '.[dev]'
+cp .env.example .env
 ```
 
 ## Configuration
 
-Set IMAP credentials as environment variables:
+All runtime configuration is env-driven. Copy `.env.example` and fill values.
 
-- `ARGUS_IMAP_HOST` (e.g. `imap.gmail.com`)
-- `ARGUS_IMAP_USER`
-- `ARGUS_IMAP_PASSWORD`
-- `ARGUS_IMAP_FOLDER` (optional, default: `INBOX`)
+Important variables:
+- `ARGUS_TIMEZONE` (default `UTC`)
+- `ARGUS_IMAP_*` for ingest
+- `ARGUS_SMTP_*` for digest sending
+- `ARGUS_DIGEST_RECIPIENTS` as comma-separated emails
+- `ARGUS_AUTH_TOKEN` for MCP auth
 
-For Gmail, you may need an App Password and IMAP enabled on the account.
+## CLI Commands
 
-## Daily workflow
-
-1) Ingest new emails since the last run:
-
-```
+```bash
 argus ingest
-```
-
-2) Normalise raw JSON into cleaned JSON:
-
-```
 argus normalise
-```
-
-3) Generate today's digest:
-
-```
 argus digest
+argus send-digest
+argus status
+argus run-daily
+argus run-daily --skip-email
+argus serve-mcp --host 127.0.0.1 --port 8765
 ```
 
-## Notes
+`run-daily` executes:
+1. Ingest new emails.
+2. Normalize raw records.
+3. Build digest for today.
+4. Send digest email.
 
-- `state/last_run.json` stores the timestamp of the last successful ingest.
-- Raw emails are stored in `raw/YYYY-MM-DD/`.
-- Cleaned records are stored in `clean/YYYY-MM-DD/`.
-- Digests are stored in `digests/YYYY-MM-DD.md`.
-- LLM summarisation is stubbed; `digest.py` builds a structured bundle ready for an API call.
+## Daily Cron (06:30 Local)
 
-## Cleaned JSON schema
-
-```json
-{
-  "source": "tldr|nvidia|evolvingai|unknown",
-  "message_id": "...",
-  "received_at": "ISO8601",
-  "subject": "...",
-  "sender": "...",
-  "clean_text": "...",
-  "links": ["..."],
-  "fingerprint": "sha256..."
-}
+```cron
+30 6 * * * cd /home/peter/argus && /home/peter/argus/.venv/bin/argus run-daily >> /home/peter/argus/state/cron.log 2>&1
 ```
+
+## MCP Server for ChatGPT Connector
+
+Run local MCP server:
+
+```bash
+argus serve-mcp --host 127.0.0.1 --port 8765
+```
+
+Expose through your existing private tunnel workflow (same operating model as `jobtracker-mcp`).
+
+Auth header required for MCP endpoints:
+
+```text
+Authorization: Bearer <ARGUS_AUTH_TOKEN>
+```
+
+Implemented MCP tools:
+- `argus_pipeline_status`
+- `argus_list_items`
+- `argus_get_digest`
+- `argus_get_bundle`
+
+## Testing
+
+```bash
+pytest
+```
+
+## Operational Notes
+
+- Runtime artifacts are written to `raw/`, `clean/`, `digests/`, and `state/`.
+- `state/last_run.json` stores the last successful ingest timestamp.
+- Digest markdown files are in `digests/YYYY-MM-DD.md`.

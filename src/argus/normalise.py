@@ -2,17 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from bs4 import BeautifulSoup
 
-RAW_DIR = Path("raw")
-CLEAN_DIR = Path("clean")
+from .paths import CLEAN_DIR, RAW_DIR
 
+
+logger = logging.getLogger(__name__)
 URL_RE = re.compile(r"https?://[^\s\)\]\>\"']+")
+
+
+@dataclass(frozen=True)
+class NormaliseResult:
+    processed: int
+    skipped: int
 
 
 def _strip_html(html: str) -> str:
@@ -66,17 +74,43 @@ def _clean_record(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run() -> None:
-    if not RAW_DIR.exists():
-        return
+def iter_clean_records(date: str) -> list[dict[str, Any]]:
+    path = CLEAN_DIR / date
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for file in sorted(path.glob("*.json")):
+        records.append(json.loads(file.read_text(encoding="utf-8")))
+    return records
 
+
+def _process_dir(date_dir: Path) -> tuple[int, int]:
+    processed = 0
+    skipped = 0
+    out_dir = CLEAN_DIR / date_dir.name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for raw_file in sorted(date_dir.glob("*.json")):
+        out_file = out_dir / raw_file.name
+        if out_file.exists() and out_file.stat().st_mtime >= raw_file.stat().st_mtime:
+            skipped += 1
+            continue
+        raw = json.loads(raw_file.read_text(encoding="utf-8"))
+        clean = _clean_record(raw)
+        out_file.write_text(json.dumps(clean, indent=2, ensure_ascii=False), encoding="utf-8")
+        processed += 1
+    return processed, skipped
+
+
+def run() -> NormaliseResult:
+    if not RAW_DIR.exists():
+        return NormaliseResult(processed=0, skipped=0)
+
+    processed = 0
+    skipped = 0
     for date_dir in sorted(p for p in RAW_DIR.iterdir() if p.is_dir()):
-        out_dir = CLEAN_DIR / date_dir.name
-        out_dir.mkdir(parents=True, exist_ok=True)
-        for raw_file in sorted(date_dir.glob("*.json")):
-            out_file = out_dir / raw_file.name
-            if out_file.exists() and out_file.stat().st_mtime >= raw_file.stat().st_mtime:
-                continue
-            raw = json.loads(raw_file.read_text(encoding="utf-8"))
-            clean = _clean_record(raw)
-            out_file.write_text(json.dumps(clean, indent=2, ensure_ascii=False), encoding="utf-8")
+        dir_processed, dir_skipped = _process_dir(date_dir)
+        processed += dir_processed
+        skipped += dir_skipped
+
+    logger.info("normalise complete processed=%s skipped=%s", processed, skipped)
+    return NormaliseResult(processed=processed, skipped=skipped)

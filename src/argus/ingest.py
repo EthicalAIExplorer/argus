@@ -2,20 +2,26 @@ from __future__ import annotations
 
 import imaplib
 import json
-import os
+import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email import message_from_bytes
 from email.message import Message
 from email.policy import default
-from pathlib import Path
 from typing import Any
 
-STATE_PATH = Path("state/last_run.json")
-RAW_DIR = Path("raw")
+from .config import ImapConfig, load_imap_config
+from .paths import RAW_DIR, STATE_PATH
 
 
-class ConfigError(RuntimeError):
-    pass
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class IngestResult:
+    fetched: int
+    last_run: str
+    date_dir: str | None
 
 
 def _load_last_run() -> datetime:
@@ -32,13 +38,6 @@ def _save_last_run(ts: datetime) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {"last_run": ts.astimezone(UTC).isoformat().replace("+00:00", "Z")}
     STATE_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-def _required_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise ConfigError(f"Missing required env var: {name}")
-    return value
 
 
 def _decode_part(part: Message) -> str:
@@ -99,42 +98,43 @@ def _parse_message(raw_bytes: bytes, uid: str, internal_date: str | None) -> dic
     }
 
 
-def run() -> None:
-    host = _required_env("ARGUS_IMAP_HOST")
-    user = _required_env("ARGUS_IMAP_USER")
-    password = _required_env("ARGUS_IMAP_PASSWORD")
-    folder = os.getenv("ARGUS_IMAP_FOLDER", "INBOX")
-
+def run(config: ImapConfig | None = None) -> IngestResult:
+    cfg = config or load_imap_config()
     last_run = _load_last_run()
     since_date = last_run.strftime("%d-%b-%Y")
 
-    with imaplib.IMAP4_SSL(host) as imap:
-        imap.login(user, password)
-        imap.select(folder)
+    fetched = 0
+    today_dir_name: str | None = None
+
+    with imaplib.IMAP4_SSL(cfg.host) as imap:
+        imap.login(cfg.user, cfg.password)
+        imap.select(cfg.folder)
         status, data = imap.search(None, f"(SINCE {since_date})")
         if status != "OK":
             raise RuntimeError("IMAP search failed")
         uids = data[0].split()
 
-        if not uids:
-            _save_last_run(datetime.now(UTC))
-            return
+        if uids:
+            today_dir = RAW_DIR / datetime.now(UTC).date().isoformat()
+            today_dir.mkdir(parents=True, exist_ok=True)
+            today_dir_name = today_dir.name
 
-        today_dir = RAW_DIR / datetime.now(UTC).date().isoformat()
-        today_dir.mkdir(parents=True, exist_ok=True)
+            for uid in uids:
+                status, msg_data = imap.fetch(uid, "(RFC822 INTERNALDATE)")
+                if status != "OK" or not msg_data:
+                    continue
+                raw_bytes = msg_data[0][1]
+                internal_date = None
+                if len(msg_data[0]) > 2 and isinstance(msg_data[0][0], bytes):
+                    meta = msg_data[0][0].decode("utf-8", errors="ignore")
+                    if "INTERNALDATE" in meta:
+                        internal_date = meta
+                record = _parse_message(raw_bytes, uid.decode("utf-8", errors="ignore"), internal_date)
+                out_path = today_dir / f"{record['uid']}.json"
+                out_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+                fetched += 1
 
-        for uid in uids:
-            status, msg_data = imap.fetch(uid, "(RFC822 INTERNALDATE)")
-            if status != "OK" or not msg_data:
-                continue
-            raw_bytes = msg_data[0][1]
-            internal_date = None
-            if len(msg_data[0]) > 2 and isinstance(msg_data[0][0], bytes):
-                meta = msg_data[0][0].decode("utf-8", errors="ignore")
-                if "INTERNALDATE" in meta:
-                    internal_date = meta
-            record = _parse_message(raw_bytes, uid.decode("utf-8", errors="ignore"), internal_date)
-            out_path = today_dir / f"{record['uid']}.json"
-            out_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    _save_last_run(datetime.now(UTC))
+    now = datetime.now(UTC)
+    _save_last_run(now)
+    logger.info("ingest complete fetched=%s since=%s", fetched, since_date)
+    return IngestResult(fetched=fetched, last_run=now.isoformat(), date_dir=today_dir_name)
