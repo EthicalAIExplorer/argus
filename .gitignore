@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+.venv/
+.env
+
+# Runtime artifacts
+raw/
+clean/
+digests/
+state/last_run.json

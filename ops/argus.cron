@@ -1,0 +1,2 @@
+# Argus daily run at 06:30 local time
+30 6 * * * cd /home/peter/argus && /home/peter/argus/.venv/bin/argus run-daily >> /home/peter/argus/state/cron.log 2>&1
