@@ -9,6 +9,7 @@ from email import message_from_bytes
 from email.message import Message
 from email.policy import default
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .config import ImapConfig, load_imap_config
 from .paths import RAW_DIR, STATE_PATH
@@ -22,6 +23,10 @@ class IngestResult:
     fetched: int
     last_run: str
     date_dir: str | None
+
+
+def _today_dir_date(timezone: ZoneInfo) -> str:
+    return datetime.now(timezone).date().isoformat()
 
 
 def _load_last_run() -> datetime:
@@ -98,8 +103,9 @@ def _parse_message(raw_bytes: bytes, uid: str, internal_date: str | None) -> dic
     }
 
 
-def run(config: ImapConfig | None = None) -> IngestResult:
+def run(config: ImapConfig | None = None, timezone: ZoneInfo | None = None) -> IngestResult:
     cfg = config or load_imap_config()
+    tz = timezone or ZoneInfo("UTC")
     last_run = _load_last_run()
     since_date = last_run.strftime("%d-%b-%Y")
 
@@ -115,7 +121,7 @@ def run(config: ImapConfig | None = None) -> IngestResult:
         uids = data[0].split()
 
         if uids:
-            today_dir = RAW_DIR / datetime.now(UTC).date().isoformat()
+            today_dir = RAW_DIR / _today_dir_date(tz)
             today_dir.mkdir(parents=True, exist_ok=True)
             today_dir_name = today_dir.name
 

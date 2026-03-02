@@ -24,7 +24,7 @@ class DailyRunResult:
 
 
 def run_daily(timezone: ZoneInfo, send_email: bool = True) -> DailyRunResult:
-    ingest_result = ingest_mod.run()
+    ingest_result = ingest_mod.run(timezone=timezone)
     normalise_result = normalise_mod.run()
     digest_result = digest_mod.run(timezone=timezone)
 

@@ -27,7 +27,8 @@ def main(verbose: bool = typer.Option(False, "--verbose", help="Enable debug log
 @app.command()
 def ingest() -> None:
     """Fetch new emails and store raw JSON."""
-    result = ingest_mod.run()
+    runtime = load_runtime_config()
+    result = ingest_mod.run(timezone=runtime.timezone)
     typer.echo(json.dumps({"fetched": result.fetched, "last_run": result.last_run, "date_dir": result.date_dir}))
 
 

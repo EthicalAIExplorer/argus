@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -14,12 +16,14 @@ from pydantic import BaseModel
 from .config import load_mcp_config, load_runtime_config
 from .digest import build_bundle_for_date, digest_path_for_date
 from .normalise import iter_clean_records
+from .paths import DIGEST_DIR
 from .status import get_pipeline_status
 
 
 SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-03-26"]
 DEFAULT_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0]
 _clients: dict[str, asyncio.Queue[str]] = {}
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class JsonRpcRequest(BaseModel):
@@ -91,9 +95,26 @@ def _tool_list() -> list[dict[str, Any]]:
     ]
 
 
+def _target_date(raw_date: Any, default_timezone: Any) -> str:
+    if raw_date is None:
+        return datetime.now(default_timezone).date().isoformat()
+    date = str(raw_date).strip()
+    if not DATE_RE.fullmatch(date):
+        raise ValueError("date must be in YYYY-MM-DD format")
+    return date
+
+
+def _safe_digest_path(date: str) -> Path:
+    candidate = digest_path_for_date(date).resolve()
+    base = DIGEST_DIR.resolve()
+    if base not in candidate.parents:
+        raise ValueError("invalid digest date path")
+    return candidate
+
+
 def _run_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     runtime = load_runtime_config()
-    date = arguments.get("date")
+    date = _target_date(arguments.get("date"), runtime.timezone)
 
     if name == "argus_pipeline_status":
         status = get_pipeline_status(date=date, timezone=runtime.timezone)
@@ -107,7 +128,7 @@ def _run_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         }
 
     if name == "argus_list_items":
-        target_date = date or datetime.now(runtime.timezone).date().isoformat()
+        target_date = date
         source = str(arguments.get("source", "")).strip().lower()
         limit = int(arguments.get("limit", 50))
         rows = iter_clean_records(target_date)
@@ -116,14 +137,14 @@ def _run_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return {"date": target_date, "count": len(rows[:limit]), "items": rows[:limit]}
 
     if name == "argus_get_digest":
-        target_date = date or datetime.now(runtime.timezone).date().isoformat()
-        path = digest_path_for_date(target_date)
+        target_date = date
+        path = _safe_digest_path(target_date)
         if not path.exists():
             return {"date": target_date, "exists": False, "digest": ""}
         return {"date": target_date, "exists": True, "digest": path.read_text(encoding="utf-8")}
 
     if name == "argus_get_bundle":
-        target_date = date or datetime.now(runtime.timezone).date().isoformat()
+        target_date = date
         return build_bundle_for_date(target_date)
 
     raise ValueError(f"Unknown tool: {name}")
@@ -183,6 +204,8 @@ async def _handle_rpc(request: JsonRpcRequest) -> JsonRpcResponse:
                 id=request.id,
                 result={"content": [{"type": "text", "text": _serialize_tool_result_text(result)}]},
             )
+        except ValueError as exc:
+            return JsonRpcResponse(id=request.id, error={"code": -32602, "message": str(exc)})
         except Exception as exc:  # noqa: BLE001
             return JsonRpcResponse(id=request.id, error={"code": 500, "message": str(exc)})
 
